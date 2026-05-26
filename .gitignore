@@ -1,0 +1,14 @@
+# Secrets
+.env
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# Books folder (large PDFs — upload to Pinecone separately)
+book/
+
+# OS files
+.DS_Store
+Thumbs.db
