@@ -1,24 +1,26 @@
 import re
-from llama_index.core import PromptTemplate
 
 
 def is_garbage_line(line: str) -> bool:
-    """Detect if a single line is corrupted/binary garbage."""
     if not line or len(line) < 3:
         return False
 
-    # High ratio of non-ASCII or non-printable characters
+    # High ratio of non-ASCII / non-printable characters
     bad = sum(1 for c in line if ord(c) > 127 or (ord(c) < 32 and c not in '\t'))
-    if len(line) > 0 and bad / len(line) > 0.10:
+    if bad / len(line) > 0.10:
         return True
 
-    # Repeating substring pattern — e.g. "sFxAbsFxAbsFxAbs"
+    # Repeating substring pattern e.g. "sFxAbsFxAbsFxAbs"
     for size in range(3, 9):
         if len(line) >= size * 4 and line[:size] * 4 in line:
             return True
 
-    # File path / binary reference patterns
-    if re.search(r'\.(h|so|dll|exe|obj|pyc)\b', line):
+    # File paths, metadata, binary refs
+    if re.search(r'[A-Za-z]:\\[A-Za-z]', line):           # Windows path
+        return True
+    if re.search(r'_params\.|hyperlink|\.pdf\b', line):    # PDF metadata
+        return True
+    if re.search(r'\.(h|so|dll|exe|obj|pyc)\b', line):     # Binary files
         return True
     if re.search(r'(@[A-Za-z0-9_]{4,}|%[0-9A-Fa-f]{2}){2,}', line):
         return True
@@ -26,32 +28,9 @@ def is_garbage_line(line: str) -> bool:
     return False
 
 
-def is_garbage_response(text: str) -> bool:
-    """Detect if the full LLM response is garbage or corrupted."""
-    if not text:
-        return False
-
-    # Repeating pattern across full response
-    for size in range(3, 9):
-        chunk = text[:size]
-        if len(chunk) == size and chunk * 5 in text:
-            return True
-
-    # Non-ASCII garbage chars
-    if re.search(r'[ɑɪ΢νωαβγδεζηθλμξπρστφχψ]', text):
-        return True
-
-    # File references in response
-    if re.search(r'\w+\.(h|so|dll|exe|obj)\b', text):
-        return True
-
-    return False
-
-
-def clean_context(raw: str) -> str:
-    """Strip garbage lines from PDF-extracted context."""
+def clean_context(text: str) -> str:
     lines = []
-    for line in raw.splitlines():
+    for line in text.splitlines():
         line = line.strip()
         if line and not is_garbage_line(line):
             lines.append(line)
@@ -59,36 +38,52 @@ def clean_context(raw: str) -> str:
 
 
 def query_index(index, query, llm):
-    """Queries the index with the given query, with automatic garbage recovery."""
+    """
+    Retrieve context from Pinecone, clean it BEFORE sending to LLM,
+    then call LLM directly with the clean context.
+    """
+    # Step 1: retrieve raw chunks from Pinecone
+    try:
+        retriever = index.as_retriever(similarity_top_k=4)
+        nodes = retriever.retrieve(query)
+        raw_chunks = [node.get_content() for node in nodes]
+    except Exception:
+        raw_chunks = []
 
-    qa_prompt_tmpl_str = (
-        "You are an expert mechanical engineering assistant.\n"
-        "Relevant context from the knowledge base is provided below.\n"
-        "---------------------\n"
-        "{context_str}\n"
-        "---------------------\n"
-        "Instructions:\n"
-        "- If the context above contains relevant information, use it to answer.\n"
-        "- If the context is empty or not relevant, answer from your own mechanical engineering knowledge.\n"
-        "- Write all mathematical expressions in LaTeX using $$ delimiters.\n"
-        "- Give only the direct answer. No preamble, no commentary.\n"
-        "Query: {query_str}\n"
-        "Answer: "
-    )
-    qa_prompt_tmpl = PromptTemplate(qa_prompt_tmpl_str)
-    query_engine = index.as_query_engine(text_qa_template=qa_prompt_tmpl, llm=llm)
-    response = query_engine.query(query)
+    # Step 2: clean every chunk before LLM sees it
+    clean_chunks = []
+    for chunk in raw_chunks:
+        cleaned = clean_context(chunk)
+        if len(cleaned.strip()) > 50:          # skip near-empty cleaned chunks
+            clean_chunks.append(cleaned)
 
-    # If response is garbage, bypass Pinecone entirely and ask LLM directly
-    if is_garbage_response(response.response):
-        direct_prompt = (
-            "You are an expert mechanical engineering assistant. "
-            "Answer the following question directly and concisely using your own knowledge. "
-            "Use LaTeX ($$...$$) for any mathematical expressions. "
-            "Give only the answer, no preamble.\n\n"
+    context = "\n\n".join(clean_chunks) if clean_chunks else ""
+
+    # Step 3: build prompt and call LLM directly
+    if context:
+        prompt = (
+            "You are an expert mechanical engineering assistant.\n"
+            "Use the context below to answer the question. "
+            "If context is not relevant, use your own knowledge.\n"
+            "Write all math in LaTeX using $$ delimiters. "
+            "Give only the direct answer — no preamble, no commentary.\n\n"
+            f"Context:\n{context}\n\n"
             f"Question: {query}\nAnswer:"
         )
-        clean = llm.complete(direct_prompt)
-        response.response = clean.text
+    else:
+        prompt = (
+            "You are an expert mechanical engineering assistant. "
+            "Answer the following question directly using your own knowledge. "
+            "Write all math in LaTeX using $$ delimiters. "
+            "Give only the direct answer — no preamble.\n\n"
+            f"Question: {query}\nAnswer:"
+        )
 
-    return response
+    result = llm.complete(prompt)
+
+    # Wrap in a simple response object so home.py stays unchanged
+    class Response:
+        def __init__(self, text):
+            self.response = text
+
+    return Response(result.text)
