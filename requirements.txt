@@ -3,7 +3,7 @@ llama_index
 llama-index-embeddings-huggingface
 llama-index-llms-groq
 llama-index-vector-stores-pinecone
-pinecone-client
+pinecone
 pypdf
 python-dotenv
 sentence-transformers
