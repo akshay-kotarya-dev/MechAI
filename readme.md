@@ -1,5 +1,7 @@
 # MechAI ⚙️
 
+**Live Demo:** [mechanical-ta-rag-based-llm.streamlit.app](https://mechanical-ta-rag-based-llm.streamlit.app)
+
 An intelligent mechanical engineering assistant that answers questions with accurate, context-aware responses and LaTeX-formatted math equations.
 
 ## Features
